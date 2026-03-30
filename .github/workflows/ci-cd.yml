@@ -76,3 +76,108 @@ jobs:
         # C'est la 'gate' de qualité automatique.
       - name: Exécuter les tests
         run: dotnet test --no-build --configuration Release --verbosity normal
+
+ # ════════════════════════════════════════════════════════════════
+  # JOB 2 — DOCKER BUILD & PUBLISH
+  # Construit l'image Docker et la pousse sur Docker Hub
+  # Ne s'exécute que si Job 1 réussit ET sur main ou un tag
+  # ════════════════════════════════════════════════════════════════
+  docker-publish:
+    name: Docker Build & Publish
+    runs-on: ubuntu-latest
+    needs: build-and-test    # DÉPENDANCE : attend la réussite du Job 1
+
+    # CONDITION : s'exécute seulement si...
+    # - c'est un push (pas une PR)
+    # - ET c'est sur main OU c'est un tag versionné (v1.2.3)
+    if: |
+      github.event_name == 'push' &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/tags/v'))
+
+    # OUTPUTS : ce job produit des données utilisées par le Job 3
+    outputs:
+      image-tag: ${{ steps.meta.outputs.version }}
+      is-release: ${{ startsWith(github.ref, 'refs/tags/v') }}
+
+    steps:
+
+      - name: Checkout du code source
+        uses: actions/checkout@v4
+
+      # ── Configurer Docker Buildx ────────────────────────────────
+      # Buildx est une version améliorée du builder Docker.
+      # Il supporte le cache GitHub Actions et le build multi-architecture.
+      # Indispensable pour utiliser l'action docker/build-push-action.
+      - name: Configurer Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Se connecter à Docker Hub ───────────────────────────────
+      # Utilise les secrets configurés à l'étape B.
+      # Équivalent automatique de votre 'docker login' du TP 10.
+      - name: Connexion à Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Générer les métadonnées et les tags ────────────────────
+      # C'est l'étape la plus importante pour le versioning.
+      # Cette action génère automatiquement les bons tags selon le contexte :
+      #
+      # Si push sur main :
+      #   → username/restaurant-api:sha-a3f2c891 (SHA du commit)
+      #   → username/restaurant-api:main
+      #
+      # Si tag git v1.2.3 :
+      #   → username/restaurant-api:1.2.3
+      #   → username/restaurant-api:1.2
+      #   → username/restaurant-api:latest
+      - name: Générer les tags et métadonnées
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            # Sur push main → tag avec le SHA du commit (traçabilité)
+            type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
+            # Sur tag v1.2.3 → tag sémantique complet
+            type=semver,pattern={{version}}
+            # Sur tag v1.2.3 → tag majeur.mineur seulement (ex: 1.2)
+            type=semver,pattern={{major}}.{{minor}}
+            # 'latest' uniquement sur les releases taguées
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      # ── Construire et pousser l'image ───────────────────────────
+      # Équivalent automatique de vos commandes du TP 10 :
+      #   docker build ...
+      #   docker tag ...
+      #   docker push ...
+      #
+      # cache-from/cache-to : réutilise les couches Docker déjà buildées.
+      # Si votre code change mais pas les dépendances NuGet,
+      # les couches COPY .csproj + dotnet restore sont réutilisées → +50% de vitesse.
+      - name: Builder et pousser l'image Docker
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          dockerfile: Presentation/Restaurants.Presentation.Api/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── Résumé visible dans GitHub ──────────────────────────────
+      # Ces lignes créent un joli résumé dans l'onglet Actions de GitHub
+      - name: Résumé du build
+        run: |
+          echo '## 📦 Image Docker publiée' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '| Clé | Valeur |' >> $GITHUB_STEP_SUMMARY
+          echo '|-----|--------|' >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.IMAGE_NAME }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Tags | ${{ steps.meta.outputs.tags }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Digest | ${{ steps.build.outputs.digest }} |" >> $GITHUB_STEP_SUMMARY
+
