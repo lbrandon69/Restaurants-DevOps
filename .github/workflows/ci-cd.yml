@@ -15,18 +15,24 @@ on:
 
 env:
   IMAGE_NAME: chetane/restaurants-api
+  AZURE_APP_NAME: aci-restaurant-api
 
 jobs:
+  # ==========================================
+  # JOB 1 : COMPILATION ET TESTS UNITAIRES
+  # ==========================================
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
+
       - name: Installer .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+
       - name: Mettre en cache NuGet
         uses: actions/cache@v4
         with:
@@ -34,13 +40,19 @@ jobs:
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
+
       - name: Restaurer les dépendances
         run: dotnet restore Restaurants.Administration.sln
+
       - name: Compiler le projet
         run: dotnet build Restaurants.Administration.sln --configuration Release --no-restore
+
       - name: Exécuter les tests
         run: dotnet test Restaurants.Administration.sln --configuration Release --no-build --verbosity normal
 
+  # ==========================================
+  # JOB 2 : BUILD ET PUBLICATION DOCKER HUB
+  # ==========================================
   docker-publish:
     name: Docker Build & Publish
     runs-on: ubuntu-latest
@@ -53,38 +65,37 @@ jobs:
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
+
       - name: Configurer Docker Buildx
         uses: docker/setup-buildx-action@v3
-      - name: Debug IMAGE_NAME
-        run: |
-          echo "DEBUG: IMAGE_NAME='${{ env.IMAGE_NAME }}'"
-          echo "DEBUG: printenv IMAGE_NAME -> $(printenv IMAGE_NAME || true)"
-          echo "DEBUG: all env vars with IMAGE_NAME:" && env | grep IMAGE_NAME || true
+
       - name: Vérifier la disponibilité du secret DOCKERHUB_TOKEN
         run: |
           if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
-            echo "ERROR: DOCKERHUB_TOKEN est vide ou non disponible dans ce run"
-            echo "::error::DOCKERHUB_TOKEN est vide ou non disponible dans ce run"
+            echo "ERROR: DOCKERHUB_TOKEN est vide"
             exit 1
           else
             echo "DOCKERHUB_TOKEN présent"
           fi
+
       - name: Connexion à Docker Hub
         uses: docker/login-action@v3
         with:
           username: chetane
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Générer les tags et métadonnées
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: chetane/restaurants-api
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
       - name: Builder et pousser l'image Docker
         id: build
         uses: docker/build-push-action@v5
@@ -96,31 +107,36 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
       - name: Extraire le tag principal pour la mise à jour du compose
         id: image-tag
         run: |
           MAIN_TAG=$(echo "${{ steps.meta.outputs.tags }}" | head -n 1)
           echo "image_tag=$MAIN_TAG" >> $GITHUB_OUTPUT
 
+  # ==========================================
+  # JOB 3 : DEPLOIEMENT GITOPS (COMPOSE)
+  # ==========================================
   deploy:
-    name: Deploy
+    name: Deploy Local Compose
     runs-on: ubuntu-latest
     needs: docker-publish
-    permissions:
-      contents: write
     environment:
       name: ${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
+
       - name: Récupérer le tag de l'image publié
         id: deploy-tag
         run: |
           echo "image_tag=${{ needs.docker-publish.outputs.image-tag }}" >> $GITHUB_OUTPUT
           echo "deploy_env=${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}" >> $GITHUB_OUTPUT
+
       - name: Mettre à jour compose.yaml avec le nouveau tag
         run: |
           sed -E -i "s|^[[:space:]]*image: .*|image: ${{ steps.deploy-tag.outputs.image_tag }}|" compose.yaml
+
       - name: Committer la mise à jour du compose.yaml
         run: |
           git config user.name 'GitHub Actions'
@@ -129,6 +145,9 @@ jobs:
           git diff --quiet --cached || git commit -m "deploy(${{ steps.deploy-tag.outputs.deploy_env }}): image ${{ steps.deploy-tag.outputs.image_tag }}"
           git push
 
+  # ==========================================
+  # JOB 4 : DEPLOIEMENT INFRASTRUCTURE AZURE
+  # ==========================================
   deploy-azure:
     name: Deploy Azure Container App
     runs-on: ubuntu-latest
@@ -139,28 +158,32 @@ jobs:
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
+
       - name: Login to Azure
         uses: azure/login@v1
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
+
       - name: Deploy container image to Azure Container App
         uses: azure/container-apps-deploy-action@v2
         with:
-          name: aci-restaurant-api
-          resource-group: ${{ secrets.AZURE_RESOURCE_GROUP }}
-          image: chetane/restaurants-api:${{ needs.docker-publish.outputs.image-tag }}
-          registry: docker.io
-          registry-username: chetane
-          registry-password: ${{ secrets.DOCKERHUB_TOKEN }}
+          containerAppName: ${{ env.AZURE_APP_NAME }}
+          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          imageToDeploy: ${{ needs.docker-publish.outputs.image-tag }}
+          registryUrl: docker.io
+          registryUsername: chetane
+          registryPassword: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Configure Container App secrets
         run: |
           az containerapp secret set \
-            --name aci-restaurant-api \
+            --name ${{ env.AZURE_APP_NAME }} \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --secrets ConnectionStrings__RestaurantsDb="${{ secrets.SQL_CONNECTION_STRING }}" BlobStorage__ConnectionString="${{ secrets.BLOB_CONNECTION_STRING }}"
+            --secrets ConnectionStrings--RestaurantsDb="${{ secrets.SQL_CONNECTION_STRING }}" BlobStorage--ConnectionString="${{ secrets.BLOB_CONNECTION_STRING }}"
+
       - name: Update Container App env vars to use secret refs
         run: |
           az containerapp update \
-            --name aci-restaurant-api \
+            --name ${{ env.AZURE_APP_NAME }} \
             --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --set template.containers[0].env="[{'name':'ConnectionStrings__RestaurantsDb','secretRef':'ConnectionStrings__RestaurantsDb'},{'name':'BlobStorage__ConnectionString','secretRef':'BlobStorage__ConnectionString'}]"
+            --set-env-vars "ConnectionStrings__RestaurantsDb=secretref:ConnectionStrings--RestaurantsDb" "BlobStorage__ConnectionString=secretref:BlobStorage--ConnectionString"
