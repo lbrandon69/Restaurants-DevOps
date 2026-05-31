@@ -144,7 +144,6 @@ jobs:
           git add compose.yaml
           git diff --quiet --cached || git commit -m "deploy(${{ steps.deploy-tag.outputs.deploy_env }}): image ${{ steps.deploy-tag.outputs.image_tag }}"
           git push
-
   # ==========================================
   # JOB 4 : DEPLOIEMENT INFRASTRUCTURE AZURE
   # ==========================================
@@ -171,9 +170,6 @@ jobs:
           resourceGroup: rg-restaurant-prod
           imageToDeploy: ${{ needs.docker-publish.outputs.image-tag }}
           location: francecentral
-          targetPort: 8080                   
-          ingress: external                  
-          containerAppEnvironment: aci-restaurant-api-env
           registryUrl: docker.io
           registryUsername: chetane
           registryPassword: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -182,12 +178,12 @@ jobs:
         run: |
           az containerapp secret set \
             --name ${{ env.AZURE_APP_NAME }} \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --secrets ConnectionStrings--RestaurantsDb="${{ secrets.SQL_CONNECTION_STRING }}" BlobStorage--ConnectionString="${{ secrets.BLOB_CONNECTION_STRING }}"
+            --resource-group rg-restaurant-prod \
+            --secrets db-connection="${{ secrets.SQL_CONNECTION_STRING }}" blob-connection="${{ secrets.BLOB_CONNECTION_STRING }}"
 
       - name: Update Container App env vars to use secret refs
         run: |
           az containerapp update \
             --name ${{ env.AZURE_APP_NAME }} \
-            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
-            --set-env-vars "ConnectionStrings__RestaurantsDb=secretref:ConnectionStrings--RestaurantsDb" "BlobStorage__ConnectionString=secretref:BlobStorage--ConnectionString"
+            --resource-group rg-restaurant-prod \
+            --set-env-vars "ConnectionStrings__RestaurantsDb=secretref:db-connection" "BlobStorage__ConnectionString=secretref:blob-connection" "ASPNETCORE_ENVIRONMENT=Production"
