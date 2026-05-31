@@ -168,7 +168,7 @@ jobs:
         uses: azure/container-apps-deploy-action@v2
         with:
           containerAppName: ${{ env.AZURE_APP_NAME }}
-          resourceGroup: ${{ secrets.AZURE_RESOURCE_GROUP }}
+          resourceGroup: rg-restaurant-prod
           imageToDeploy: ${{ needs.docker-publish.outputs.image-tag }}
           registryUrl: docker.io
           registryUsername: chetane
