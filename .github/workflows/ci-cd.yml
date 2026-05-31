@@ -170,6 +170,7 @@ jobs:
           containerAppName: ${{ env.AZURE_APP_NAME }}
           resourceGroup: rg-restaurant-prod
           imageToDeploy: ${{ needs.docker-publish.outputs.image-tag }}
+          location: francecentral
           registryUrl: docker.io
           registryUsername: chetane
           registryPassword: ${{ secrets.DOCKERHUB_TOKEN }}
