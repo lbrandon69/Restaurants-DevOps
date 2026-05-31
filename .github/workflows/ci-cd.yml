@@ -1,7 +1,7 @@
 name: CI/CD — Restaurant API
 
 permissions:
-  contents: read
+  contents: write
 
 on:
   push:
@@ -14,22 +14,19 @@ on:
       - '**'
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/restaurants-api
+  IMAGE_NAME: chetane/restaurants-api
 
 jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
-
       - name: Installer .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
-
       - name: Mettre en cache NuGet
         uses: actions/cache@v4
         with:
@@ -37,13 +34,10 @@ jobs:
           key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
           restore-keys: |
             ${{ runner.os }}-nuget-
-
       - name: Restaurer les dépendances
         run: dotnet restore Restaurants.Administration.sln
-
       - name: Compiler le projet
         run: dotnet build Restaurants.Administration.sln --configuration Release --no-restore
-
       - name: Exécuter les tests
         run: dotnet test Restaurants.Administration.sln --configuration Release --no-build --verbosity normal
 
@@ -54,35 +48,43 @@ jobs:
     if: |
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
-
     outputs:
       image-tag: ${{ steps.image-tag.outputs.image_tag }}
-
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
-
       - name: Configurer Docker Buildx
         uses: docker/setup-buildx-action@v3
-
+      - name: Debug IMAGE_NAME
+        run: |
+          echo "DEBUG: IMAGE_NAME='${{ env.IMAGE_NAME }}'"
+          echo "DEBUG: printenv IMAGE_NAME -> $(printenv IMAGE_NAME || true)"
+          echo "DEBUG: all env vars with IMAGE_NAME:" && env | grep IMAGE_NAME || true
+      - name: Vérifier la disponibilité du secret DOCKERHUB_TOKEN
+        run: |
+          if [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
+            echo "ERROR: DOCKERHUB_TOKEN est vide ou non disponible dans ce run"
+            echo "::error::DOCKERHUB_TOKEN est vide ou non disponible dans ce run"
+            exit 1
+          else
+            echo "DOCKERHUB_TOKEN présent"
+          fi
       - name: Connexion à Docker Hub
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          username: chetane
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Générer les tags et métadonnées
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: chetane/restaurants-api
           tags: |
             type=sha,prefix=sha-,enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=main,enable=${{ github.ref == 'refs/heads/main' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-
       - name: Builder et pousser l'image Docker
         id: build
         uses: docker/build-push-action@v5
@@ -94,23 +96,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
       - name: Extraire le tag principal pour la mise à jour du compose
         id: image-tag
         run: |
           TAGS='${{ steps.meta.outputs.tags }}'
           MAIN_TAG=$(echo "$TAGS" | cut -d',' -f1)
           echo "image_tag=$MAIN_TAG" >> $GITHUB_OUTPUT
-
-      - name: Résumé du build
-        run: |
-          echo '## Image Docker publiée' >> $GITHUB_STEP_SUMMARY
-          echo '' >> $GITHUB_STEP_SUMMARY
-          echo '| Clé | Valeur |' >> $GITHUB_STEP_SUMMARY
-          echo '|-----|--------|' >> $GITHUB_STEP_SUMMARY
-          echo "| Image | \\`${{ env.IMAGE_NAME }}\\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Tags | ${{ steps.meta.outputs.tags }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Digest | ${{ steps.build.outputs.digest }} |" >> $GITHUB_STEP_SUMMARY
 
   deploy:
     name: Deploy
@@ -120,43 +111,21 @@ jobs:
       contents: write
     environment:
       name: ${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}
-
     steps:
       - name: Checkout du code source
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Récupérer le tag de l'image publié
         id: deploy-tag
         run: |
           echo "image_tag=${{ needs.docker-publish.outputs.image-tag }}" >> $GITHUB_OUTPUT
           echo "deploy_env=${{ startsWith(github.ref, 'refs/tags/v') && 'production' || 'staging' }}" >> $GITHUB_OUTPUT
-
       - name: Mettre à jour compose.yaml avec le nouveau tag
         run: |
-          sed -E -i "s|^[[:space:]]*image: .*|image: ${{ env.IMAGE_NAME }}:${{ steps.deploy-tag.outputs.image_tag }}|" compose.yaml
-          echo '=== compose.yaml après mise à jour ==='
-          grep 'image:' compose.yaml
-
+          sed -E -i "s|^[[:space:]]*image: .*|image: ${{ steps.deploy-tag.outputs.image_tag }}|" compose.yaml
       - name: Committer la mise à jour du compose.yaml
         run: |
           git config user.name 'GitHub Actions'
           git config user.email 'actions@github.com'
           git add compose.yaml
-          git diff --quiet --cached || git commit -m "deploy(${{ steps.deploy-tag.outputs.deploy_env }}): image ${{ env.IMAGE_NAME }}:${{ steps.deploy-tag.outputs.image_tag }}"
+          git diff --quiet --cached || git commit -m "deploy(${{ steps.deploy-tag.outputs.deploy_env }}): image ${{ steps.deploy-tag.outputs.image_tag }}"
           git push
-
-      - name: Résumé du déploiement
-        run: |
-          echo "## Déploiement ${{ steps.deploy-tag.outputs.deploy_env }}" >> $GITHUB_STEP_SUMMARY
-          echo "Image déployée : ${{ env.IMAGE_NAME }}:${{ steps.deploy-tag.outputs.image_tag }}" >> $GITHUB_STEP_SUMMARY
-
-# .env recommandé pour découpler les chaînes de connexion
-# APP_ENV=Production
-# API_PORT=5001
-# SQL_PORT=1433
-# SQL_SA_PASSWORD=restaurantDb123!
-# DB_CONNECTION_STRING=Server=sqlserver-container,1433;Database=RestaurantsDb;User Id=sa;Password=${SQL_SA_PASSWORD};TrustServerCertificate=True;
-# BLOB_CONNECTION_STRING=UseDevelopmentStorage=true
-# AZURITE_ACCOUNTS=devstoreaccount1:restaurantStore123!
