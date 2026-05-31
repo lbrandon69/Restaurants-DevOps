@@ -144,6 +144,7 @@ jobs:
           git add compose.yaml
           git diff --quiet --cached || git commit -m "deploy(${{ steps.deploy-tag.outputs.deploy_env }}): image ${{ steps.deploy-tag.outputs.image_tag }}"
           git push
+
   # ==========================================
   # JOB 4 : DEPLOIEMENT INFRASTRUCTURE AZURE
   # ==========================================
@@ -163,7 +164,7 @@ jobs:
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Deploy container image to Azure Container App
+      - name: Deploy container image & environment variables to Azure
         uses: azure/container-apps-deploy-action@v2
         with:
           containerAppName: ${{ env.AZURE_APP_NAME }}
@@ -173,17 +174,7 @@ jobs:
           registryUrl: docker.io
           registryUsername: chetane
           registryPassword: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Configure Container App secrets
-        run: |
-          az containerapp secret set \
-            --name ${{ env.AZURE_APP_NAME }} \
-            --resource-group rg-restaurant-prod \
-            --secrets db-connection="${{ secrets.SQL_CONNECTION_STRING }}" blob-connection="${{ secrets.BLOB_CONNECTION_STRING }}"
-
-      - name: Update Container App env vars to use secret refs
-        run: |
-          az containerapp update \
-            --name ${{ env.AZURE_APP_NAME }} \
-            --resource-group rg-restaurant-prod \
-            --set-env-vars "ConnectionStrings__RestaurantsDb=secretref:db-connection" "BlobStorage__ConnectionString=secretref:blob-connection" "ASPNETCORE_ENVIRONMENT=Production"
+          environmentVariables: |
+            ConnectionStrings__RestaurantsDb=${{ secrets.SQL_CONNECTION_STRING }}
+            BlobStorage__ConnectionString=${{ secrets.BLOB_CONNECTION_STRING }}
+            ASPNETCORE_ENVIRONMENT=Production
