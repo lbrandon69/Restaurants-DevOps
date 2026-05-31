@@ -1,6 +1,6 @@
 ﻿services:
   restaurants.presentation.api:
-    image: chetane/restaurants-api:v1.0.0
+image: chetane/restaurants-api:main
     environment:
       - ConnectionStrings__RestaurantsDb=${DB_CONNECTION_STRING}
       - BlobStorage__ConnectionString=${BLOB_CONNECTION_STRING}
@@ -17,7 +17,7 @@
 
 
   sqlserver-container:
-    image: mcr.microsoft.com/mssql/server:2022-latest
+image: chetane/restaurants-api:main
     platform: linux/amd64
     environment:
       - ACCEPT_EULA=Y
@@ -33,7 +33,7 @@
 
 
   azure-storage-emulator:
-    image: mcr.microsoft.com/azure-storage/azurite
+image: chetane/restaurants-api:main
     container_name: azurite
     ports:
       - "10000:10000"
