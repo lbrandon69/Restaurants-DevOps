@@ -171,6 +171,9 @@ jobs:
           resourceGroup: rg-restaurant-prod
           imageToDeploy: ${{ needs.docker-publish.outputs.image-tag }}
           location: francecentral
+          targetPort: 8080                   
+          ingress: external                  
+          containerAppEnvironment: aci-restaurant-api-env
           registryUrl: docker.io
           registryUsername: chetane
           registryPassword: ${{ secrets.DOCKERHUB_TOKEN }}
